@@ -1,0 +1,382 @@
+From 6f608ffe24c72da37c5f98cd6f35e3ad86476465 Mon Sep 17 00:00:00 2001
+From: Ivan Ivanov <Ivan Ivanov>
+Date: Sat, 12 Dec 2015 22:08:18 +0200
+Subject: [PATCH] Better disc point picking
+
+---
+ src/color.h     |  4 ++--
+ src/constants.h |  1 +
+ src/main.cpp    | 56 +++++++++++++++++++++++++++++++++++++++++++-------------
+ src/shading.cpp | 32 +++++++++++++++-----------------
+ src/shading.h   | 42 +++++++++++++++++++++++++++++++++++-------
+ src/util.h      |  2 +-
+ 6 files changed, 97 insertions(+), 40 deletions(-)
+
+diff --git a/src/color.h b/src/color.h
+index 7eaabf2..713bc9b 100644
+--- a/src/color.h
++++ b/src/color.h
+@@ -105,12 +105,12 @@ struct Color {
+ 		g /= divider;
+ 		b /= divider;
+ 	}
+-	
++
+ 	inline const float& operator[] (int index) const
+ 	{
+ 		return components[index];
+ 	}
+-	
++
+ 	inline float& operator[] (int index)
+ 	{
+ 		return components[index];
+diff --git a/src/constants.h b/src/constants.h
+index a55aaa5..5b9577b 100644
+--- a/src/constants.h
++++ b/src/constants.h
+@@ -30,5 +30,6 @@
+ #define RESY 480
+ #define PI 3.141592653589793238
+ #define INF 1e99
++#define RENDER_COUNTER 300000
+ 
+ #endif // __CONSTANTS_H__
+diff --git a/src/main.cpp b/src/main.cpp
+index a3e02d8..ebff539 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -29,7 +29,7 @@ Lambert pod;
+ Vector lightPos;
+ double lightIntensity;
+ Color ambientLight;
+-bool wantAA = true;
++bool wantAA = false;
+ Environment* environment;
+ int maxRaytraceDepth = 10;
+ 
+@@ -51,17 +51,17 @@ void setupScene()
+ 	ceilingTex.color2 = Color(0.5, 0.5, 0.5);
+ 	Texture* plochki = new BitmapTexture("data/floor.bmp", 100);
+ 	pod.texture = plochki;
+-	
++
+ 	Layered* layeredPod = new Layered;
+ 	layeredPod->addLayer(&pod, Color(1, 1, 1));
+ 	layeredPod->addLayer(new Refl(0.9), Color(1, 1, 1) * 0.02f);
+-	
++
+ 	ceiling.texture = &ceilingTex;
+ 	nodes.push_back({ &plane, layeredPod });
+ 	//nodes.push_back({ &plane2, &ceiling });
+ 	lightPos = Vector(120, 180, 0);
+ 	lightIntensity = 45000.0;
+-	
++
+ 	// sphere:
+ 	s1.O = Vector(0, 30, -30);
+ 	s1.R = 27;
+@@ -73,20 +73,20 @@ void setupScene()
+ 	blue.color1 = Color(0.2f, 0.4f, 1.0f);
+ 	blue.color2 = Color(0.4f, 0.4f, 0.4f);
+ 	blue.scaling = 2;
+-	
++
+ 	ball.texture = new BitmapTexture("data/world.bmp");
+ 	ball.specularExponent = 200;
+ 	ball.specularMultiplier = 0.5;
+-	
++
+ 	Layered* glass = new Layered;
+ 	const double IOR_GLASS = 1.6;
+ 	glass->addLayer(new Refr(IOR_GLASS, 0.9), Color(1, 1, 1));
+ 	glass->addLayer(new Refl(0.9), Color(1, 1, 1), new Fresnel(IOR_GLASS));
+-	
++
+ 	nodes.push_back({ &s1, glass });
+-	
++
+ 	environment = new CubemapEnvironment("data/env/forest");
+-	
++
+ 	camera.frameBegin();
+ }
+ 
+@@ -99,7 +99,7 @@ Color raytrace(Ray ray)
+ 	for (auto& node: nodes) {
+ 		IntersectionInfo info;
+ 		if (!node.geom->intersect(ray, info)) continue;
+-		
++
+ 		if (info.distance < closestDist) {
+ 			closestDist = info.distance;
+ 			closestNode = &node;
+@@ -122,13 +122,13 @@ bool visibilityCheck(const Vector& start, const Vector& end)
+ 	ray.start = start;
+ 	ray.dir = end - start;
+ 	ray.dir.normalize();
+-	
++
+ 	double targetDist = (end - start).length();
+-	
++
+ 	for (auto& node: nodes) {
+ 		IntersectionInfo info;
+ 		if (!node.geom->intersect(ray, info)) continue;
+-		
++
+ 		if (info.distance < targetDist) {
+ 			return false;
+ 		}
+@@ -136,8 +136,38 @@ bool visibilityCheck(const Vector& start, const Vector& end)
+ 	return true;
+ }
+ 
++inline bool is_outside(int x, int y)
++{
++    return (x >= frameWidth() || y >= frameHeight() || x < 0 || y < 0);
++}
++
++//Change this to render_discPointPicking() and render_old() to render()
+ void render()
+ {
++    double radius = 200, x, y;
++    int counter = RENDER_COUNTER;
++    Uint32 lastTicks = SDL_GetTicks();
++    while(counter-- > 0)
++    {
++        getUniformlyDiscPoint(radius, x, y); //The new one
++        //getDiscPoint(radius, x, y);  //The old one
++        x+=radius;
++        y+=radius;
++
++        if(is_outside(x,y)) continue;
++
++        vfb[int(y)][int(x)] += Color(0.1,0.1,0.1);
++
++        if(SDL_GetTicks() - lastTicks > 100){
++            displayVFB(vfb);
++            lastTicks = SDL_GetTicks();
++        }
++    }
++
++}
++
++void render_old()
++{
+ 	const double kernel[5][2] = {
+ 		{ 0.0, 0.0 },
+ 		{ 0.6, 0.0 },
+diff --git a/src/shading.cpp b/src/shading.cpp
+index cc69fd2..b317595 100644
+--- a/src/shading.cpp
++++ b/src/shading.cpp
+@@ -34,7 +34,7 @@ Color CheckerTexture::sample(const IntersectionInfo& info)
+ {
+ 	int x = (int) floor(info.u * scaling / 5.0);
+ 	int y = (int) floor(info.v * scaling / 5.0);
+-	
++
+ 	Color checkerColor = ((x + y) % 2 == 0) ? color1 : color2;
+ 	return checkerColor;
+ }
+@@ -53,27 +53,27 @@ double getLightContrib(const IntersectionInfo& info)
+ Color Lambert::shade(const Ray& ray, const IntersectionInfo& info)
+ {
+ 	Color diffuse = texture ? texture->sample(info) : this->color;
+-	
++
+ 	Vector v1 = faceforward(ray.dir, info.normal);
+ 	Vector v2 = lightPos - info.ip;
+ 	v2.normalize();
+ 	double lambertCoeff = dot(v1, v2);
+-	
++
+ 	return ambientLight * diffuse
+ 		+ diffuse * lambertCoeff * getLightContrib(info);
+-	
++
+ }
+ 
+ Color Phong::shade(const Ray& ray, const IntersectionInfo& info)
+ {
+ 	Color diffuse = texture ? texture->sample(info) : this->color;
+-	
++
+ 	Vector v1 = faceforward(ray.dir, info.normal);
+ 	Vector v2 = lightPos - info.ip;
+ 	v2.normalize();
+ 	double lambertCoeff = dot(v1, v2);
+ 	double fromLight = getLightContrib(info);
+-	
++
+ 	Vector r = reflect(info.ip - lightPos, info.normal);
+ 	Vector toCamera = -ray.dir;
+ 	double cosGamma = dot(toCamera, r);
+@@ -82,7 +82,7 @@ Color Phong::shade(const Ray& ray, const IntersectionInfo& info)
+ 		phongCoeff = pow(cosGamma, specularExponent);
+ 	else
+ 		phongCoeff = 0;
+-	
++
+ 	return ambientLight * diffuse
+ 		+ diffuse * lambertCoeff * fromLight
+ 		+ Color(1, 1, 1) * (phongCoeff * specularMultiplier * fromLight);
+@@ -107,7 +107,7 @@ Color BitmapTexture::sample(const IntersectionInfo& info)
+ 	y = (y % bitmap->getHeight());
+ 	if (x < 0) x += bitmap->getWidth();
+ 	if (y < 0) y += bitmap->getHeight();
+-	
++
+ 	return bitmap->getPixel(x, y);
+ }
+ 
+@@ -121,8 +121,8 @@ Color Refl::shade(const Ray& ray, const IntersectionInfo& info)
+ 		Ray newRay = ray;
+ 		newRay.start = info.ip + n * 0.000001;
+ 		newRay.dir = reflect(ray.dir, n);
+-		newRay.depth++; 
+-		
++		newRay.depth++;
++
+ 		return raytrace(newRay) * multiplier;
+ 	} else {
+ 		Color result(0, 0, 0);
+@@ -132,22 +132,20 @@ Color Refl::shade(const Ray& ray, const IntersectionInfo& info)
+ 		for (int i = 0; i < count; i++) {
+ 			Vector a, b;
+ 			orthonormalSystem(n, a, b);
+-			double angle = randomFloat() * 2 * PI;
+ 			double radius = randomFloat() * 1;
+ 			double x, y;
+-			x = cos(angle) * radius;
+-			y = sin(angle) * radius;
+-			//
++            getUniformlyDiscPoint(radius, x, y);
++			//getDiscPoint(radius, x, y); //The old and bad way
+ 			x *= tan((1 - glossiness) * PI/2);
+ 			y *= tan((1 - glossiness) * PI/2);
+-			
++
+ 			Vector modifiedNormal = n + a * x + b * y;
+ 
+ 			Ray newRay = ray;
+ 			newRay.start = info.ip + n * 0.000001;
+ 			newRay.dir = reflect(ray.dir, modifiedNormal);
+-			newRay.depth++; 
+-			
++			newRay.depth++;
++
+ 			result += raytrace(newRay) * multiplier;
+ 		}
+ 		return result / count;
+diff --git a/src/shading.h b/src/shading.h
+index f9ad73a..184faa4 100644
+--- a/src/shading.h
++++ b/src/shading.h
+@@ -26,6 +26,7 @@
+ 
+ #include "geometry.h"
+ #include "color.h"
++#include <algorithm>
+ 
+ class Shader {
+ public:
+@@ -62,7 +63,7 @@ public:
+ 	Color color;
+ 	Texture* texture;
+ 	Lambert() { color.makeZero(); texture = NULL; }
+-	Color shade(const Ray& ray, const IntersectionInfo& info);	
++	Color shade(const Ray& ray, const IntersectionInfo& info);
+ };
+ 
+ class Phong: public Shader {
+@@ -71,7 +72,7 @@ public:
+ 	Texture* texture;
+ 	double specularMultiplier;
+ 	double specularExponent;
+-	Color shade(const Ray& ray, const IntersectionInfo& info);	
++	Color shade(const Ray& ray, const IntersectionInfo& info);
+ };
+ 
+ class Refl: public Shader {
+@@ -79,10 +80,10 @@ public:
+ 	double multiplier;
+ 	double glossiness;
+ 	int numSamples;
+-	Refl(double mult = 0.99, double glossiness = 1.0, int numSamples = 32): 
++	Refl(double mult = 0.99, double glossiness = 1.0, int numSamples = 32):
+ 			multiplier(mult), glossiness(glossiness), numSamples(numSamples) {}
+-	Color shade(const Ray& ray, const IntersectionInfo& info);	
+-	
++	Color shade(const Ray& ray, const IntersectionInfo& info);
++
+ };
+ 
+ class Refr: public Shader {
+@@ -90,7 +91,7 @@ public:
+ 	double ior_ratio;
+ 	double multiplier;
+ 	Refr(double ior, double mult = 0.99): ior_ratio(ior), multiplier(mult) {}
+-	Color shade(const Ray& ray, const IntersectionInfo& info);	
++	Color shade(const Ray& ray, const IntersectionInfo& info);
+ };
+ 
+ class Layered: public Shader {
+@@ -104,7 +105,7 @@ class Layered: public Shader {
+ public:
+ 	Layered() { numLayers = 0; }
+ 	void addLayer(Shader* shader, Color blend, Texture* tex = NULL);
+-	Color shade(const Ray& ray, const IntersectionInfo& info);		
++	Color shade(const Ray& ray, const IntersectionInfo& info);
+ };
+ 
+ class Fresnel: public Texture {
+@@ -114,4 +115,31 @@ public:
+ 	Color sample(const IntersectionInfo& info);
+ };
+ 
++inline void getDiscPointCentralizedUniform(double radius, double& x, double& y)
++{
++
++
++}
++
++//Calculating this way we only get points on the circle with R = radius
++inline void getDiscPoint(double radius, double& x, double& y)
++{
++    double angle = randomFloat() * 2 * PI;
++	x = cos(angle) * radius;
++	y = sin(angle) * radius;
++}
++
++//Gives pretty satisfiable distribution
++inline void getUniformlyDiscPoint(double radius, double& x, double& y)
++{
++    double angle = randomFloat()*2*PI;
++
++	float a = randomFloat();
++	float b = randomFloat();
++
++	if(b < a) std::swap(a,b);
++
++	x = b * radius * cos(2*PI * (a/b));
++	y = b * radius * sin(2*PI * (a/b));
++}
+ #endif // __SHADING_H__
+diff --git a/src/util.h b/src/util.h
+index 2ad388b..85e9b6f 100644
+--- a/src/util.h
++++ b/src/util.h
+@@ -28,7 +28,7 @@
+ #include <math.h>
+ #include <string>
+ #include <stdio.h>
+-
++#include <time.h>
+ #include "constants.h"
+ 
+ #define COUNT_OF(arr) int((sizeof(arr)) / sizeof(arr[0]))
+-- 
+2.6.3.windows.1
+

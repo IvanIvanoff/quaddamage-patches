@@ -1,0 +1,507 @@
+From 761b241f34055390e11a05c50173a764c3a91422 Mon Sep 17 00:00:00 2001
+From: Ivan Ivanov <Ivan Ivanov>
+Date: Wed, 23 Dec 2015 02:12:09 +0200
+Subject: [PATCH] Smarter CSG intersection
+
+---
+ qdamage-win32.cbp |  81 -----------------------------------
+ src/geometry.cpp  | 107 ++++++++++++++++++++++++----------------------
+ src/geometry.h    |  22 +++++++---
+ src/main.cpp      | 125 ++++++++++++++++++++++++++++++------------------------
+ src/util.h        |   1 +
+ 5 files changed, 144 insertions(+), 192 deletions(-)
+ delete mode 100644 qdamage-win32.cbp
+
+diff --git a/qdamage-win32.cbp b/qdamage-win32.cbp
+deleted file mode 100644
+index 518e7b7..0000000
+--- a/qdamage-win32.cbp
++++ /dev/null
+@@ -1,81 +0,0 @@
+-<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>
+-<CodeBlocks_project_file>
+-	<FileVersion major="1" minor="6" />
+-	<Project>
+-		<Option title="qdamage" />
+-		<Option pch_mode="2" />
+-		<Option compiler="gcc" />
+-		<Build>
+-			<Target title="Debug">
+-				<Option output="bin/Debug/qdamage" prefix_auto="1" extension_auto="1" />
+-				<Option object_output="obj/Debug/" />
+-				<Option type="1" />
+-				<Option compiler="gcc" />
+-				<Compiler>
+-					<Add option="-g" />
+-				</Compiler>
+-			</Target>
+-			<Target title="Release">
+-				<Option output="bin/Release/qdamage" prefix_auto="1" extension_auto="1" />
+-				<Option object_output="obj/Release/" />
+-				<Option type="0" />
+-				<Option compiler="gcc" />
+-				<Compiler>
+-					<Add option="-O2" />
+-				</Compiler>
+-				<Linker>
+-					<Add option="-s" />
+-				</Linker>
+-			</Target>
+-		</Build>
+-		<Compiler>
+-			<Add option="-std=c++11" />
+-			<Add option="-Wall" />
+-			<Add directory="SDK/SDL-1.2.15/include" />
+-			<Add directory="SDK/OpenEXR-mingw/include/OpenEXR" />
+-		</Compiler>
+-		<Linker>
+-			<Add library="mingw32" />
+-			<Add library="SDLmain" />
+-			<Add library="SDL.dll" />
+-			<Add library="user32" />
+-			<Add library="gdi32" />
+-			<Add library="winmm" />
+-			<Add library="dxguid" />
+-			<Add library="IlmImf" />
+-			<Add library="Imath" />
+-			<Add library="Iex" />
+-			<Add library="Half" />
+-			<Add library="IlmThread" />
+-			<Add library="zlibstatic" />
+-			<Add directory="SDK/SDL-1.2.15/lib" />
+-			<Add directory="SDK/OpenEXR-mingw/lib" />
+-		</Linker>
+-		<Unit filename="src/bitmap.cpp" />
+-		<Unit filename="src/bitmap.h" />
+-		<Unit filename="src/camera.cpp" />
+-		<Unit filename="src/camera.h" />
+-		<Unit filename="src/color.h" />
+-		<Unit filename="src/constants.h" />
+-		<Unit filename="src/environment.cpp" />
+-		<Unit filename="src/environment.h" />
+-		<Unit filename="src/geometry.cpp" />
+-		<Unit filename="src/geometry.h" />
+-		<Unit filename="src/main.cpp" />
+-		<Unit filename="src/matrix.cpp" />
+-		<Unit filename="src/matrix.h" />
+-		<Unit filename="src/sdl.cpp" />
+-		<Unit filename="src/sdl.h" />
+-		<Unit filename="src/shading.cpp" />
+-		<Unit filename="src/shading.h" />
+-		<Unit filename="src/util.cpp" />
+-		<Unit filename="src/util.h" />
+-		<Unit filename="src/vector.h" />
+-		<Extensions>
+-			<code_completion />
+-			<envvars />
+-			<debugger />
+-			<lib_finder disable_auto="1" />
+-		</Extensions>
+-	</Project>
+-</CodeBlocks_project_file>
+diff --git a/src/geometry.cpp b/src/geometry.cpp
+index 90900cf..a389e33 100644
+--- a/src/geometry.cpp
++++ b/src/geometry.cpp
+@@ -32,7 +32,7 @@ bool Plane::intersect(const Ray& ray, IntersectionInfo& info)
+ 		return false;
+ 	if (ray.start.y < this->y && ray.dir.y <= 0)
+ 		return false;
+-	
++
+ 	// this->y = 1
+ 	// ray.start.y = 6
+ 	// ray.dir.y = -1
+@@ -56,11 +56,11 @@ bool Sphere::intersect(const Ray& ray, IntersectionInfo& info)
+ 	double A = 1; // ray.lengthSqr()
+ 	double B = 2 * dot(H, ray.dir);
+ 	double C = H.lengthSqr() - R*R;
+-	
++
+ 	double discr = B*B - 4*A*C;
+-	
++
+ 	if (discr < 0) return false; // no intersection
+-	
++
+ 	double p1, p2;
+ 	p1 = (-B - sqrt(discr)) / (2 * A);
+ 	p2 = (-B + sqrt(discr)) / (2 * A);
+@@ -70,7 +70,7 @@ bool Sphere::intersect(const Ray& ray, IntersectionInfo& info)
+ 	else if (p2 > 0)
+ 		p = p2;
+ 	else return false;
+-	
++
+ 	info.distance = p;
+ 	info.ip = ray.start + ray.dir * p;
+ 	info.normal = info.ip - O;
+@@ -92,18 +92,18 @@ bool Cube::intersectSide(double level, double start, double dir, const Ray& ray,
+ 		return false;
+ 	if (start < level && dir <= 0)
+ 		return false;
+-	
++
+ 	double scaleFactor = (level - start) / dir;
+ 	Vector ip = ray.start + ray.dir * scaleFactor;
+ 	if (ip.y > O.y + halfSide + 1e-6) return false;
+ 	if (ip.y < O.y - halfSide - 1e-6) return false;
+-	
++
+ 	if (ip.x > O.x + halfSide + 1e-6) return false;
+ 	if (ip.x < O.x - halfSide - 1e-6) return false;
+ 
+ 	if (ip.z > O.z + halfSide + 1e-6) return false;
+ 	if (ip.z < O.z - halfSide - 1e-6) return false;
+-	
++
+ 	double distance = scaleFactor;
+ 	if (distance < info.distance) {
+ 		info.ip = ip;
+@@ -126,52 +126,59 @@ bool Cube::intersect(const Ray& ray, IntersectionInfo& info)
+ 	intersectSide(O.y + halfSide, ray.start.y, ray.dir.y, ray, Vector( 0,+1, 0), info);
+ 	intersectSide(O.z - halfSide, ray.start.z, ray.dir.z, ray, Vector( 0, 0,-1), info);
+ 	intersectSide(O.z + halfSide, ray.start.z, ray.dir.z, ray, Vector( 0, 0,+1), info);
+-	
+-	return (info.distance < INF);
+-}
+ 
+-void CsgOp::findAllIntersections(Ray ray, Geometry* geom, std::vector<IntersectionInfo>& ips)
+-{
+-	IntersectionInfo info;
+-	int counter = 30;
+-	while (geom->intersect(ray, info) && counter-- > 0) {
+-		ips.push_back(info);
+-		ray.start = info.ip + ray.dir * 1e-6;
+-	}
+-	for (int i = 1; i < (int) ips.size(); i++)
+-		ips[i].distance = ips[i - 1].distance + ips[i].distance + 1e-6;
++	return (info.distance < INF);
+ }
+ 
+ bool CsgOp::intersect(const Ray& ray, IntersectionInfo& info)
+ {
+-	vector<IntersectionInfo> leftIPs, rightIPs;
+-	findAllIntersections(ray, left, leftIPs);
+-	findAllIntersections(ray, right, rightIPs);
+-	
+-	bool inA = leftIPs.size() % 2 ? true : false;
+-	bool inB = rightIPs.size() % 2 ? true : false;
+-	
+-	vector<IntersectionInfo> allIPs;
+-	allIPs = leftIPs;
+-	for (auto& ip: rightIPs) allIPs.push_back(ip);
+-	
+-	sort(allIPs.begin(), allIPs.end(), [] (const IntersectionInfo& left, const IntersectionInfo& right) { return left.distance < right.distance; });
+-	
+-	bool predicateNow = boolOp(inA, inB);
+-	
+-	for (auto& ip: allIPs) {
+-		if (ip.geom == left)
+-			inA = !inA;
+-		else
+-			inB = !inB;
+-			
+-		bool predicateNext = boolOp(inA, inB);
+-		
+-		if (predicateNext != predicateNow) {
+-			info = ip;
+-			return true;
+-		}
+-	}
+-	
++    IntersectionInfo leftInfo, rightInfo, *closest;
++    bool hasLeft, hasRight, inA, inB, predicate;
++
++    hasLeft = left->intersect(ray,leftInfo);
++    hasRight = right->intersect(ray,rightInfo);
++
++    int tmpDistance;
++
++    Ray newRay = ray;
++    int counter = 33;
++
++    while((hasLeft || hasRight) && counter-- >0){
++        closest = &leftInfo;
++        if(leftInfo.distance > rightInfo.distance){
++            closest = &rightInfo;
++        }
++
++        inA = left->isInside(closest->ip);
++        inB = right->isInside(closest->ip);
++        if(closest->geom == left){
++            inA = !inA;
++        }else{
++            inB = !inB;
++        }
++
++        predicate  = boolOp(inA, inB);
++
++        if(predicate){
++            if(closest->distance > 1e20) return false;
++            info = *closest;
++            return true;
++        }
++
++        newRay.start = closest->ip + closest->normal * 1e-5;
++
++        if(closest == &leftInfo){
++           // tmpDistance = closest->distance;
++            hasLeft = left->intersect(newRay, leftInfo);
++           // leftInfo.distance += tmpDistance;
++            rightInfo.distance = (closest->ip - rightInfo.ip).length(); //This calculation could not be more wrong :/
++        }else{
++           // tmpDistance = closest->distance;
++            hasRight = right->intersect(newRay, rightInfo);
++           // rightInfo.distance +=tmpDistance;
++            leftInfo.distance = (closest->ip - leftInfo.ip ).length(); //This calculation could not be more wrong :/
++        }
++    }
++
+ 	return false;
+ }
+diff --git a/src/geometry.h b/src/geometry.h
+index c2efb20..9c4e91b 100644
+--- a/src/geometry.h
++++ b/src/geometry.h
+@@ -24,7 +24,9 @@
+ #ifndef __GEOMETRY_H__
+ #define __GEOMETRY_H__
+ #include "vector.h"
++#include "util.h"
+ #include <vector>
++#include <algorithm>
+ 
+ 
+ class Geometry;
+@@ -40,6 +42,7 @@ struct IntersectionInfo {
+ class Geometry {
+ public:
+ 	virtual bool intersect(const Ray& ray, IntersectionInfo& info) = 0;
++	virtual bool isInside(const Vector& v) = 0;
+ 	virtual ~Geometry() {}
+ };
+ 
+@@ -48,6 +51,7 @@ public:
+ 	double y;
+ 	double limit;
+ 	Plane() { y = 0; limit = 1e99; }
++	bool isInside(const Vector& v){return false;}
+ 	bool intersect(const Ray& ray, IntersectionInfo& info);
+ };
+ 
+@@ -55,7 +59,7 @@ class Sphere: public Geometry {
+ public:
+ 	Vector O;
+ 	double R;
+-	
++    bool isInside(const Vector& v){return (v-O).lengthSqr() < R*R;}
+ 	bool intersect(const Ray& ray, IntersectionInfo& info);
+ };
+ 
+@@ -64,17 +68,25 @@ class Cube: public Geometry {
+ public:
+ 	Vector O;
+ 	double halfSide;
+-
++    bool isInside(const Vector& v){
++    bool res =
++            f_abs((O.x - v.x)<= halfSide) &&
++            f_abs((O.y - v.y)<= halfSide) &&
++            f_abs((O.z - v.z)<= halfSide);
++        return res;
++    }
+ 	bool intersect(const Ray& ray, IntersectionInfo& info);
+ };
+ 
+ class CsgOp: public Geometry {
+-	void findAllIntersections(Ray ray, Geometry* geom, std::vector<IntersectionInfo>& ips);
++	//void findAllIntersections(Ray ray, Geometry* geom, std::vector<IntersectionInfo>& ips);
+ public:
+ 	Geometry *left, *right;
+-	
++
+ 	virtual bool boolOp(bool inA, bool inB) = 0;
+-	
++    bool isInside(const Vector& v){
++        return boolOp(left->isInside(v), right->isInside(v));
++    }
+ 	bool intersect(const Ray& ray, IntersectionInfo& info);
+ };
+ 
+diff --git a/src/main.cpp b/src/main.cpp
+index a3e02d8..6cdde1b 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -29,65 +29,78 @@ Lambert pod;
+ Vector lightPos;
+ double lightIntensity;
+ Color ambientLight;
+-bool wantAA = true;
++bool wantAA = false;
+ Environment* environment;
+ int maxRaytraceDepth = 10;
+-
+-void setupScene()
++void setupScene(void)
+ {
+-	ambientLight = Color(1, 1, 1) * 0.1f;
+-	camera.position = Vector(0, 60, -120);
+ 	camera.yaw = 0;
+-	camera.pitch = -30;
++	camera.pitch = -15;
+ 	camera.roll = 0;
+ 	camera.fov = 90;
+-	camera.aspectRatio = float(frameWidth()) / float(frameHeight());
+-	plane.y = 1;
+-	plane.limit = 100;
+-	plane2.y = 200;
+-	checker.color1 = Color(0, 0, 0.5);
+-	checker.color2 = Color(1, 0.5, 0);
+-	ceilingTex.color1 = Color(0.5, 0.5, 0.5);
+-	ceilingTex.color2 = Color(0.5, 0.5, 0.5);
+-	Texture* plochki = new BitmapTexture("data/floor.bmp", 100);
+-	pod.texture = plochki;
+-	
+-	Layered* layeredPod = new Layered;
+-	layeredPod->addLayer(&pod, Color(1, 1, 1));
+-	layeredPod->addLayer(new Refl(0.9), Color(1, 1, 1) * 0.02f);
+-	
+-	ceiling.texture = &ceilingTex;
+-	nodes.push_back({ &plane, layeredPod });
+-	//nodes.push_back({ &plane2, &ceiling });
+-	lightPos = Vector(120, 180, 0);
+-	lightIntensity = 45000.0;
+-	
+-	// sphere:
+-	s1.O = Vector(0, 30, -30);
+-	s1.R = 27;
+-	cube.O = Vector(0, 6, -30);
+-	cube.halfSide = 15;
+-	CsgOp* csg = new CsgMinus;
+-	csg->left = &cube;
+-	csg->right = &s1;
+-	blue.color1 = Color(0.2f, 0.4f, 1.0f);
+-	blue.color2 = Color(0.4f, 0.4f, 0.4f);
+-	blue.scaling = 2;
+-	
+-	ball.texture = new BitmapTexture("data/world.bmp");
+-	ball.specularExponent = 200;
+-	ball.specularMultiplier = 0.5;
+-	
+-	Layered* glass = new Layered;
+-	const double IOR_GLASS = 1.6;
+-	glass->addLayer(new Refr(IOR_GLASS, 0.9), Color(1, 1, 1));
+-	glass->addLayer(new Refl(0.9), Color(1, 1, 1), new Fresnel(IOR_GLASS));
+-	
+-	nodes.push_back({ &s1, glass });
+-	
+-	environment = new CubemapEnvironment("data/env/forest");
+-	
++	camera.aspectRatio = 4. / 3.0;
++	camera.position = Vector(0,165,0);
++
+ 	camera.frameBegin();
++
++	lightPos = Vector(-90, 700, -350);
++	lightIntensity = 800000;
++	ambientLight = Color(0.2, 0.2, 0.2);
++
++	Plane* plane = new Plane;
++
++	Texture* texture = new BitmapTexture("data/floor.bmp", 200);
++	CheckerTexture* checker = new CheckerTexture;
++	checker->color1 = Color(1, 1, 1);
++	checker->color2 = Color(0, 0, 0);
++	checker->scaling = 7;
++	Lambert* lambert = new Lambert;
++	lambert->color = Color(1, 1, 1);
++	lambert->texture = texture;
++	nodes.push_back({plane, lambert});
++
++	const Uint32 colors[9] = {
++		0xff2222, 0xaa4444, 0x886666,
++		0x22ff22, 0x44aa44, 0x668866,
++		0x2222ff, 0x4444aa, 0x666688,
++	};
++
++	for (int y = 0; y < 3; y++)
++		for (int x = 0; x < 3; x++) {
++			Vector center = Vector((x - 1) * 80, y * 80 + 25, 200);
++			Sphere* s = new Sphere;
++			s->O = center;
++			s->R = 29 + 5 * x;
++			Cube* c = new Cube;
++			c->O = center + ((y == 2) ? Vector(0, 0, -35) : Vector(0, 0, 0));
++			c->halfSide = y == 2 ? 10 : 25;
++			CsgOp* diff;
++			switch (y) {
++				case 0:
++					diff = new CsgMinus;
++					diff->left = c;
++					diff->right = s;
++					break;
++				case 1:
++					diff = new CsgAnd;
++					diff->left = c;
++					diff->right = s;
++					break;
++				case 2:
++					diff = new CsgMinus;
++					diff->left = s;
++					diff->right = c;
++					break;
++				default:
++					break;
++			}
++			Phong* phong = new Phong;
++			phong->color = Color(colors[y * 3 + x]);
++			phong->specularExponent = 60;
++			phong->specularMultiplier = 1;
++			phong->texture = NULL;
++			nodes.push_back({diff, phong});
++		}
+ }
+ 
+ Color raytrace(Ray ray)
+@@ -99,7 +112,7 @@ Color raytrace(Ray ray)
+ 	for (auto& node: nodes) {
+ 		IntersectionInfo info;
+ 		if (!node.geom->intersect(ray, info)) continue;
+-		
++
+ 		if (info.distance < closestDist) {
+ 			closestDist = info.distance;
+ 			closestNode = &node;
+@@ -122,13 +135,13 @@ bool visibilityCheck(const Vector& start, const Vector& end)
+ 	ray.start = start;
+ 	ray.dir = end - start;
+ 	ray.dir.normalize();
+-	
++
+ 	double targetDist = (end - start).length();
+-	
++
+ 	for (auto& node: nodes) {
+ 		IntersectionInfo info;
+ 		if (!node.geom->intersect(ray, info)) continue;
+-		
++
+ 		if (info.distance < targetDist) {
+ 			return false;
+ 		}
+diff --git a/src/util.h b/src/util.h
+index 2ad388b..58570d0 100644
+--- a/src/util.h
++++ b/src/util.h
+@@ -38,6 +38,7 @@ inline double sqr(double a) { return a * a; }
+ inline double toRadians(double angle) { return angle / 180.0 * PI; }
+ inline double toDegrees(double angle_rad) { return angle_rad / PI * 180.0; }
+ inline int nearestInt(float x) { return (int) floor(x + 0.5f); }
++inline int f_abs(float x){float p = 1; if(x<0) p=-1; return x*p;}
+ 
+ /// returns a random floating-point number in [0..1).
+ /// This is not a very good implementation. A better method is to be employed soon.
+-- 
+2.6.3.windows.1
+

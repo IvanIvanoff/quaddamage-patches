@@ -1,0 +1,128 @@
+From 2a706b3bd286f5615d4de55e7bdb96e3a5fd8448 Mon Sep 17 00:00:00 2001
+From: Ivan Ivanov <Ivan Ivanov>
+Date: Sat, 16 Jan 2016 22:51:59 +0200
+Subject: [PATCH] Heightfield speed optimisaton
+
+---
+ src/heightfield.cpp | 44 ++++++++++++++++++++++++++++++++------------
+ 1 file changed, 32 insertions(+), 12 deletions(-)
+
+diff --git a/src/heightfield.cpp b/src/heightfield.cpp
+index 2955757..35b13ba 100644
+--- a/src/heightfield.cpp
++++ b/src/heightfield.cpp
+@@ -63,9 +63,9 @@ float Heightfield::getHighest(int x, int y, int k) const
+ void Heightfield::buildHighMap()
+ {
+ 	maxK = ceil(log(max(W, H)) / log(2));
+-	
++
+ 	highMap = new HighStruct[W * H];
+-	
++
+ 	for (int y = 0; y < H; y++) {
+ 		for (int x = 0; x < W; x++) {
+ 			float& thisHeight = highMap[y * W + x].h[0];
+@@ -75,17 +75,17 @@ void Heightfield::buildHighMap()
+ 					thisHeight = max(thisHeight, getHeight(x + dx, y + dy));
+ 		}
+ 	}
+-	
++
+ 	// r = 1 -> square 3x3
+ 	// r = 2 -> square 5x5
+ 	// r = 4 -> square 9x9
+ 	// r = 2^k -> square (2^(k+1) + 1)x(2^(k+1) + 1)
+-	// r = 2^k -> offset-> 2^(k - 1) 
++	// r = 2^k -> offset-> 2^(k - 1)
+ 	for (int k = 1; k < maxK; k++) {
+ 		for (int y = 0; y < H; y++) {
+ 			for (int x = 0; x < W; x++) {
+ 				int offset = (1 << (k - 1));
+-				highMap[y * W + x].h[k] = 
++				highMap[y * W + x].h[k] =
+ 					max(
+ 						max(getHighest(x - offset, y - offset, k - 1),
+ 							getHighest(x + offset, y - offset, k - 1)),
+@@ -110,7 +110,7 @@ Vector Heightfield::getNormal(float x, float y) const
+ 	y0 = min(H - 1, y0);
+ 	x0 = max(0, x0);
+ 	y0 = max(0, y0);
+-	Vector v = 
++	Vector v =
+ 		normals[y0 * W + x0] * ((1 - p) * (1 - q)) +
+ 		normals[y0 * W + x1] * ((    p) * (1 - q)) +
+ 		normals[y1 * W + x0] * ((1 - p) * (    q)) +
+@@ -126,7 +126,7 @@ bool Heightfield::intersect(const Ray& ray, IntersectionInfo& info)
+ 	step /= distHoriz;
+ 	double dist = bbox.closestIntersection(ray);
+ 	Vector p = ray.start + ray.dir * (dist + 1e-6); // step firmly inside the bbox
+-	
++
+ 
+ 	double mx = 1.0 / ray.dir.x; // mx = how much to go along ray.dir until the unit distance along X is traversed
+ 	double mz = 1.0 / ray.dir.z; // same as mx, for Z
+@@ -138,8 +138,28 @@ bool Heightfield::intersect(const Ray& ray, IntersectionInfo& info)
+ 
+ 		if (useOptimization) {
+ 			int k = 0;
+-			while (k < maxK && min(p.y, p.y + ray.dir.y * (1 << k)) > getHighest(x0, z0, k))
++
++            int x = min(H-1, x0);
++            int z = min(W-1, z0);
++            x = max(0,x0);
++            z = max(0, z0);
++            int hp = z*W + x;
++
++			while (k < maxK && min(p.y, p.y + ray.dir.y * (1 << k)) > highMap[hp].h[k])
+ 				k++;
++
++            // int midK, tMaxK = maxK;
++            // while(tMaxK - k > 1e3){
++            //    midK = (k + tMaxK)/2;
++
++            //     if(min(p.y, p.y + ray.dir.y * (1 << midK)) > highMap[hp].h[midK])
++            //       tMaxK = midK;
++            // else
++            //   k = midK;
++            //}
++
++
++
+ 			k--;
+ 			if (k >= 0) {
+ 				p += ray.dir * (1 << k);
+@@ -148,7 +168,7 @@ bool Heightfield::intersect(const Ray& ray, IntersectionInfo& info)
+ 				if (x0 < 0 || x0 >= W || z0 < 0 || z0 >= H) break; // if outside the [0..W)x[0..H) rect, get out
+ 			}
+ 		}
+-		
++
+ 		// calculate how much we need to go along ray.dir until we hit the next X voxel boundary:
+ 		double lx = ray.dir.x > 0 ? (ceil(p.x) - p.x) * mx : (floor(p.x) - p.x) * mx;
+ 		// same as lx, for the Z direction:
+@@ -237,10 +257,10 @@ void Heightfield::fillProperties(ParsedBlock& pb)
+ 			}
+ 		}
+ 	}
+-	
++
+ 	bbox.vmin = Vector(0, minY, 0);
+ 	bbox.vmax = Vector(W, maxY, H);
+-	
++
+ 	maxH = new float[W*H];
+ 	for (int y = 0; y < H; y++)
+ 		for (int x = 0; x < W; x++) {
+@@ -253,7 +273,7 @@ void Heightfield::fillProperties(ParsedBlock& pb)
+ 					maxH = max(maxH, heights[(y + 1) * W + x + 1]);
+ 			}
+ 		}
+-	
++
+ 	normals = new Vector[W * H];
+ 	for (int y = 0; y < H - 1; y++)
+ 		for (int x = 0; x < W - 1; x++) {
+-- 
+2.6.3.windows.1
+

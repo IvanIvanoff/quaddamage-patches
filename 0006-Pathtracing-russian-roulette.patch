@@ -1,0 +1,449 @@
+From a45b01537378a8a8fa0df7776e639eea4fdad3cc Mon Sep 17 00:00:00 2001
+From: Ivan Ivanov <Ivan Ivanov>
+Date: Sun, 24 Jan 2016 14:37:19 +0200
+Subject: [PATCH 6/6] Pathtracing russian roulette
+
+---
+ src/main.cpp  | 108 ++++++++++++++++++++++++++++++++--------------------------
+ src/scene.cpp |   7 ++--
+ src/scene.h   |  43 +++++++++++------------
+ 3 files changed, 86 insertions(+), 72 deletions(-)
+
+diff --git a/src/main.cpp b/src/main.cpp
+index fc2f383..1792139 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -29,7 +29,7 @@ Color raytrace(Ray ray)
+ 	for (auto& node: scene.nodes) {
+ 		IntersectionInfo info;
+ 		if (!node->intersect(ray, info)) continue;
+-		
++
+ 		if (info.distance < closestDist) {
+ 			closestDist = info.distance;
+ 			closestNode = node;
+@@ -65,66 +65,77 @@ Color explicitLightSample(const Ray& ray, const IntersectionInfo& info, const Co
+ {
+ 	// try to end a path by explicitly sampling a light. If there are no lights, we can't do that:
+ 	if (scene.lights.empty()) return Color(0, 0, 0);
+-	
++
+ 	// choose a random light:
+ 	int lightIdx = rnd.randint(0, scene.lights.size() - 1);
+ 	Light* chosenLight = scene.lights[lightIdx];
+-	
++
+ 	// evaluate light's solid angle as viewed from the intersection point, x:
+ 	Vector x = info.ip;
+ 	double solidAngle = chosenLight->solidAngle(x);
+-	
++
+ 	// is light is too small or invisible?
+ 	if (solidAngle == 0) return Color(0, 0, 0);
+-	
++
+ 	// choose a random point on the light:
+ 	int samplesInLight = chosenLight->getNumSamples();
+ 	int randSample = rnd.randint(0, samplesInLight - 1);
+-	
++
+ 	Vector pointOnLight;
+ 	Color unused;
+ 	chosenLight->getNthSample(randSample, x, pointOnLight, unused);
+-	
++
+ 	// camera -> ... path ... -> x -> lightPos
+ 	//                       are x and lightPos visible?
+ 	if (!visibilityCheck(x + info.normal * 1e-6, pointOnLight))
+ 		return Color(0, 0, 0);
+-	
++
+ 	// get the emitted light energy (color * power):
+ 	Color L = chosenLight->getColor();
+-	
+-	
++
++
+ 	// evaluate BRDF. It might be zero (e.g., pure reflection), so bail out early if that's the case
+ 	Vector w_out = pointOnLight - x;
+ 	w_out.normalize();
+ 	Color brdfAtPoint = shader->eval(info, ray.dir, w_out);
+ 	if (brdfAtPoint.intensity() == 0) return Color(0, 0, 0);
+-	
++
+ 	// probability to hit this light's projection on the hemisphere
+ 	// (conditional probability, since we're specifically aiming for this light):
+ 	float probHitLightArea = 1.0f / solidAngle;
+-	
++
+ 	// probability to pick this light out of all N lights:
+ 	float probPickThisLight = 1.0f / scene.lights.size();
+-	
++
+ 	// combined probability of this generated w_out ray:
+ 	float chooseLightProb = probHitLightArea * probPickThisLight;
+-	
++
+ 	/* Light flux (Li) */ /* BRDFs@path*/  /*last BRDF*/ /*MC probability*/
+ 	return     L       *   pathMultiplier * brdfAtPoint / chooseLightProb;
+ }
+ 
+ Color pathtrace(Ray ray, const Color& pathMultiplier, Random& rnd)
+ {
++    float rouletteMultiplier = 1.0f;
+     //if (scene.settings.roulette && ray.depth > 4)
++    if(scene.settings.roulette){
++        double chance = rnd.randdouble();
++        if(chance < pathMultiplier.intensity()){
++            rouletteMultiplier = 1/pathMultiplier.intensity();
++        }else{
++            return Color(0,0,0);
++        }
++    }
++
+ 	if (ray.depth > scene.settings.maxTraceDepth) return Color(0, 0, 0);
+ 	if (pathMultiplier.intensity() < 0.001f) return Color(0, 0, 0);
++
+ 	Node* closestNode = NULL;
+ 	double closestDist = INF;
+ 	IntersectionInfo closestInfo;
+ 	for (auto& node: scene.nodes) {
+ 		IntersectionInfo info;
+ 		if (!node->intersect(ray, info)) continue;
+-		
++
+ 		if (info.distance < closestDist) {
+ 			closestDist = info.distance;
+ 			closestNode = node;
+@@ -143,40 +154,40 @@ Color pathtrace(Ray ray, const Color& pathMultiplier, Random& rnd)
+ 	if (hitLight) {
+ 		if (!(ray.flags & RF_DIFFUSE)) {
+ 			// forbid light contributions after a diffuse reflection
+-			return hitLightColor * pathMultiplier;
+-		} else 
++			return hitLightColor * pathMultiplier * rouletteMultiplier;
++		} else
+ 			return Color(0, 0, 0);
+ 	}
+ 
+ 	// check if we hit the sky:
+ 	if (closestNode == NULL) {
+ 		if (scene.environment)
+-			return scene.environment->getEnvironment(ray.dir) * pathMultiplier;
++			return scene.environment->getEnvironment(ray.dir) * pathMultiplier * rouletteMultiplier;
+ 		else return Color(0, 0, 0);
+ 	}
+-	
++
+ 	closestInfo.rayDir = ray.dir;
+ 	if (closestNode->bump)
+ 		closestNode->bump->modifyNormal(closestInfo);
+-	
++
+ 	// ("sampling the light"):
+ 	// try to end the current path with explicit sampling of some light
+-	Color contribLight = explicitLightSample(ray, closestInfo, pathMultiplier, 
++	Color contribLight = explicitLightSample(ray, closestInfo, pathMultiplier * rouletteMultiplier,
+ 											closestNode->shader, rnd);
+ 	// ("sampling the BRDF"):
+-	// also try to extend the current path randomly: 
++	// also try to extend the current path randomly:
+ 	Ray w_out = ray;
+ 	w_out.depth++;
+ 	Color brdf;
+ 	float pdf;
+ 	closestNode->shader->spawnRay(closestInfo, ray.dir, w_out, brdf, pdf);
+-	
++
+ 	if (pdf == -1) return Color(1, 0, 0); // BRDF not implemented
+ 	if (pdf == 0) return Color(0, 0, 0);  // BRDF is zero
+-	
+-	
+-	Color contribGI = pathtrace(w_out, pathMultiplier * brdf / pdf, rnd);
+-	return contribLight + contribGI;	
++
++
++	Color contribGI = pathtrace(w_out, pathMultiplier*rouletteMultiplier * brdf / pdf, rnd);
++	return contribLight + contribGI;
+ }
+ 
+ bool visibilityCheck(const Vector& start, const Vector& end)
+@@ -185,13 +196,13 @@ bool visibilityCheck(const Vector& start, const Vector& end)
+ 	ray.start = start;
+ 	ray.dir = end - start;
+ 	ray.dir.normalize();
+-	
++
+ 	double targetDist = (end - start).length();
+-	
++
+ 	for (auto& node: scene.nodes) {
+ 		IntersectionInfo info;
+ 		if (!node->intersect(ray, info)) continue;
+-		
++
+ 		if (info.distance < targetDist) {
+ 			return false;
+ 		}
+@@ -208,23 +219,23 @@ void debugRayTrace(int x, int y)
+ 
+ Color raytraceSinglePixel(double x, double y)
+ {
+-	auto getRay = scene.camera->dof ? 
++	auto getRay = scene.camera->dof ?
+ 		[](double x, double y, int whichCamera) {
+ 			return scene.camera->getDOFRay(x, y, whichCamera);
+ 		} :
+ 		[](double x, double y, int whichCamera) {
+ 			return scene.camera->getScreenRay(x, y, whichCamera);
+ 		};
+-	
+-	auto trace = scene.settings.gi ? 
+-		[](const Ray& ray) { 
++
++	auto trace = scene.settings.gi ?
++		[](const Ray& ray) {
+ 			Random& rnd = getRandomGen();
+-			return pathtrace(ray, Color(1, 1, 1), rnd); 
++			return pathtrace(ray, Color(1, 1, 1), rnd);
+ 		} :
+-		[](const Ray& ray) { 
+-			return raytrace(ray); 
++		[](const Ray& ray) {
++			return raytrace(ray);
+ 		};
+-		
++
+ 	if (scene.camera->stereoSeparation > 0) {
+ 		Ray leftRay = getRay(x, y, CAMERA_LEFT);
+ 		Ray rightRay= getRay(x, y, CAMERA_RIGHT);
+@@ -233,9 +244,9 @@ Color raytraceSinglePixel(double x, double y)
+ 		if (scene.settings.saturation != 1) {
+ 			colorLeft.adjustSaturation(scene.settings.saturation);
+ 			colorRight.adjustSaturation(scene.settings.saturation);
+-		
++
+ 		}
+-		return  colorLeft * scene.camera->leftMask 
++		return  colorLeft * scene.camera->leftMask
+ 		      + colorRight* scene.camera->rightMask;
+ 	} else {
+ 		Ray ray = getRay(x, y, CAMERA_CENTRAL);
+@@ -272,15 +283,16 @@ Color renderGIPixel(int x, int y)
+ {
+ 	Color sum(0, 0, 0);
+ 	int N = scene.settings.numPaths;
+-	
++
+ 	Random rnd = getRandomGen();
++	#pragma omp dy
+ 	for (int i = 0; i < N; i++) {
+ 		Ray ray = scene.camera->getScreenRay(
+ 			x + rnd.randdouble(), y + rnd.randdouble()
+ 		);
+-		sum += pathtrace(ray, Color(1, 1, 1), rnd); 
++		sum += pathtrace(ray, Color(1, 1, 1), rnd);
+ 	}
+-	
++
+ 	return sum / N;
+ }
+ 
+@@ -303,7 +315,7 @@ void render()
+ {
+ 	scene.beginFrame();
+ 	vector<Rect> buckets = getBucketsList();
+-	
++
+ 	if (scene.settings.wantPrepass || scene.settings.gi) {
+ 		// We render the whole screen in three passes.
+ 		// 1) First pass - use very coarse resolution rendering, tracing a single ray for a 16x16 block:
+@@ -347,19 +359,19 @@ int main ( int argc, char** argv )
+ 		printf("Could not parse the scene!\n");
+ 		return -1;
+ 	}
+-	
++
+ 	initGraphics(scene.settings.frameWidth, scene.settings.frameHeight);
+ 	setWindowCaption("Quad Damage: preparing...");
+-	
++
+ 	scene.beginRender();
+-	
++
+ 	setWindowCaption("Quad Damage: rendering...");
+ 	Uint32 startTicks = SDL_GetTicks();
+ 	renderScene_threaded();
+ 	Uint32 elapsedMs = SDL_GetTicks() - startTicks;
+ 	printf("Render took %.2fs\n", elapsedMs / 1000.0f);
+ 	setWindowCaption("Quad Damage: rendered in %.2fs\n", elapsedMs / 1000.0f);
+-	
++
+ 	displayVFB(vfb);
+ 	waitForUserExit();
+ 	closeGraphics();
+diff --git a/src/scene.cpp b/src/scene.cpp
+index 976aad4..0d02641 100644
+--- a/src/scene.cpp
++++ b/src/scene.cpp
+@@ -67,7 +67,7 @@ class ParsedBlockImpl: public ParsedBlock {
+ 		char propName[128];
+ 		char propValue[256];
+ 		bool recognized;
+-		
++
+ 		LineInfo() {}
+ 		LineInfo(int line, const char* name, const char* value): line(line)
+ 		{
+@@ -370,7 +370,7 @@ public:
+ 	Texture* findTextureByName(const char* name);
+ 	Geometry* findGeometryByName(const char* name);
+ 	Node* findNodeByName(const char* name);
+-	
++
+ 	bool parse(const char* filename, Scene* s);
+ };
+ 
+@@ -814,11 +814,12 @@ GlobalSettings::GlobalSettings()
+ 	frameHeight = RESY;
+ 	wantAA = true;
+ 	dbg = false;
+-	maxTraceDepth = 4;
++	maxTraceDepth = 8;
+ 	ambientLight.makeZero();
+ 	saturation = 1;
+ 	wantPrepass = true;
+ 	gi = false;
++	roulette = false;
+ 	numPaths = 10;
+ }
+ 
+diff --git a/src/scene.h b/src/scene.h
+index c6fd724..05aa218 100644
+--- a/src/scene.h
++++ b/src/scene.h
+@@ -61,9 +61,9 @@ public:
+ 	char name[64]; //!< A name of this element (a string like "sphere01", "myCamera", etc)
+ 	SceneElement(); //!< A constructor. It sets the name to the empty string.
+ 	virtual ~SceneElement() {} //!< a virtual destructor
+-	
++
+ 	virtual ElementType getElementType() const = 0; //!< Gets the element type
+-	
++
+ 	/**
+ 	 * @brief set all the properties of a scene element from a parsed block
+ 	 *
+@@ -97,7 +97,7 @@ public:
+ 	 * (the implementation of SceneElement::fillProperties() does nothing)
+ 	 */
+ 	virtual void fillProperties(ParsedBlock& pb);
+-	
++
+ 	/**
+ 	 * @brief a callback that gets called before the rendering commences
+ 	 *
+@@ -119,7 +119,7 @@ public:
+ 	 * All these callbacks are called by the Scene::beginRender() function.
+ 	 */
+ 	virtual void beginRender();
+-	
++
+ 	/**
+ 	 * @brief same as beginRender(), but gets called before each frame
+ 	 *
+@@ -128,7 +128,7 @@ public:
+ 	 * (e.g., when rendering an animation).
+ 	 */
+ 	virtual void beginFrame();
+-	
++
+ 	friend class SceneParser;
+ };
+ 
+@@ -159,25 +159,25 @@ public:
+ 	virtual bool getTextureProp(const char* name, Texture** value) = 0;
+ 	virtual bool getNodeProp(const char* name, Node** value) = 0;
+ 	virtual bool getStringProp(const char* name, char* value) = 0; // the buffer should be 256 chars long
+-	
++
+ 	// useful for scene assets like textures, mesh files, etc.
+ 	// the value will hold the full filename to the file.
+ 	// If the file/dir is not found, a FileNotFound exception is raised.
+ 	virtual bool getFilenameProp(const char* name, char* value) = 0;
+-	
++
+ 	// Does the same logic as getFilenameProp(), but also loads the bitmap
+ 	// file from the specified file name. The given bitmap is first deleted if not NULL.
+ 	virtual bool getBitmapFileProp(const char* name, Bitmap& value) = 0;
+-	
++
+ 	// Gets a transform from the parsed block. Namely, it searches for all properties named
+ 	// "scale", "rotate" and "translate" and applies them to T.
+ 	virtual void getTransformProp(Transform& T) = 0;
+-	
++
+ 	virtual void requiredProp(const char* name) = 0; // signal an error (missing property of the given name)
+-	
++
+ 	virtual void signalError(const char* msg) = 0; // signal an error with a specified message
+ 	virtual void signalWarning(const char* msg) = 0; // signal a warning with a specified message
+-	
++
+ 	// some functions for direct parsed block access:
+ 	virtual int getBlockLines() = 0;
+ 	virtual void getBlockLine(int idx, int& srcLine, char head[], char tail[]) = 0;
+@@ -192,8 +192,8 @@ public:
+ 	virtual Texture* findTextureByName(const char* name) = 0;
+ 	virtual Geometry* findGeometryByName(const char* name) = 0;
+ 	virtual Node* findNodeByName(const char* name) = 0;
+-	
+-	
++
++
+ 	/**
+ 	 * resolveFullPath() tries to find a file (or folder), by appending the given path to the directory, where
+ 	 * the scene file resides. The idea is that all external files (textures, meshes, etc.) are
+@@ -245,19 +245,20 @@ struct GlobalSettings: public SceneElement {
+ 
+ 	// Lighting:
+ 	Color ambientLight;          //!< ambient color
+-	
++
+ 	// AA-related:
+ 	bool wantAA;                 //!< Is Anti-Aliasing on?
+ 	bool gi;                     //!< Is GI on?
+-	
++
+ 	int maxTraceDepth;           //!< Maximum recursion depth
+-	
++	bool roulette;               //!< Is Russian-Roulette on?
++
+ 	bool dbg;                    //!< A debugging flag (if on, various raytracing-related procedures will dump debug info to stdout).
+-	float saturation; 
+-	
++	float saturation;
++
+ 	bool wantPrepass;            //!< Coarse resolution pre-pass required (defaults to true)
+ 	int numPaths;                //!< paths per pixel in path tracing
+-		
++
+ 	GlobalSettings();
+ 	void fillProperties(ParsedBlock& pb);
+ 	ElementType getElementType() const { return ELEM_SETTINGS; }
+@@ -273,10 +274,10 @@ struct Scene {
+ 	Environment* environment;
+ 	Camera* camera;
+ 	GlobalSettings settings;
+-	
++
+ 	Scene();
+ 	~Scene();
+-	
++
+ 	bool parseScene(const char* sceneFile); //!< Parses a scene file and loads the scene from it. Returns true on success.
+ 	void beginRender(); //!< Notifies the scene so that a render is about to begin. It calls the beginRender() method of all scene elements
+ 	void beginFrame(); //!< Notifies the scene so that a new frame is about to begin. It calls the beginFrame() method of all scene elements
+-- 
+2.6.3.windows.1
+

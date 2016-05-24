@@ -1,0 +1,354 @@
+From 1bfa9ede199c3bfba736443a961a1f4e3e1096d7 Mon Sep 17 00:00:00 2001
+From: Ivan Ivanov <Ivan Ivanov>
+Date: Fri, 22 Jan 2016 21:44:45 +0200
+Subject: [PATCH] Spot light implemented
+
+---
+ data/boxed.qdmg |  4 ++--
+ src/lights.cpp  | 39 ++++++++++++++++++++++++++++--------
+ src/lights.h    | 62 ++++++++++++++++++++++++++++++++++++++++-----------------
+ src/main.cpp    | 30 ++++++++++++++--------------
+ src/scene.cpp   |  5 +++--
+ 5 files changed, 95 insertions(+), 45 deletions(-)
+
+diff --git a/data/boxed.qdmg b/data/boxed.qdmg
+index fc97b9a..38bea5e 100644
+--- a/data/boxed.qdmg
++++ b/data/boxed.qdmg
+@@ -1,6 +1,6 @@
+ GlobalSettings {
+-	frameWidth          1024
+-	frameHeight         768
++	frameWidth          640
++	frameHeight         480
+ 	ambientLight        (0.075, 0.075, 0.075)
+ 	maxTraceDepth 8
+ 	wantAA false
+diff --git a/src/lights.cpp b/src/lights.cpp
+index 4c97c37..0ff4933 100644
+--- a/src/lights.cpp
++++ b/src/lights.cpp
+@@ -1,4 +1,3 @@
+-
+ #include "lights.h"
+ #include "util.h"
+ #include "random_generator.h"
+@@ -26,21 +25,21 @@ void RectLight::getNthSample(int sampleIdx, const Vector& shadePos,
+ 	Random& rnd = getRandomGen();
+ 	double x = (sampleIdx % xSubd + rnd.randfloat()) / xSubd;
+ 	double y = (sampleIdx / xSubd + rnd.randfloat()) / ySubd;
+-	
++
+ 	samplePos = Vector(x - 0.5, 0, y - 0.5);
+-	
++
+ 	Vector shadePos_LS = T.undoPoint(shadePos);
+-	
++
+ 	if (shadePos_LS.y < 0) {
+ 		float cosWeight = float(dot(Vector(0, -1, 0), shadePos_LS) / shadePos_LS.length());
+ 		color = this->color * power * area * cosWeight;
+ 	} else {
+ 		color.makeZero();
+ 	}
+-	
++
+ 	samplePos = T.point(samplePos);
+ }
+-	
++
+ bool RectLight::intersect(const Ray& ray, double& intersectionDist)
+ {
+ 	Ray ray_LS = T.undoRay(ray);
+@@ -52,8 +51,8 @@ bool RectLight::intersect(const Ray& ray, double& intersectionDist)
+ 	Vector p = ray_LS.start + ray_LS.dir * lengthToIntersection;
+ 	if (fabs(p.x) < 0.5 && fabs(p.z) < 0.5) {
+ 		// the hit point is inside the 1x1 square - calculate the length to the intersection:
+-		double distance = (T.point(p) - ray.start).length(); 
+-		
++		double distance = (T.point(p) - ray.start).length();
++
+ 		if (distance < intersectionDist) {
+ 			intersectionDist = distance;
+ 			return true; // intersection found, and it improves the current closest dist
+@@ -72,3 +71,27 @@ float RectLight::solidAngle(const Vector& x)
+ 	return area * cosA / (1 + d);
+ }
+ 
++ void SpotLight::getNthSample(int sampleIdx, const Vector& shadePos,
++							  Vector& samplePos, Color& color)
++{
++    Vector inDir = shadePos - pos;
++    inDir.normalize();
++    //Get the cos between the direction vectors and then get the angle in radians by applying arccosine
++    double shadeCos = dot(dir, inDir);
++    double theta = acos(shadeCos);
++    theta = toDegrees(theta);
++    if(theta <= innerAngle){
++        color = power * this->color;
++        samplePos = pos;
++    }
++    else if(theta > innerAngle && theta < outerAngle)    {
++        color = power * this->color * (outerAngle - theta);
++        samplePos = pos;
++    }
++    else{
++        color.makeZero();
++        samplePos = pos;
++    }
++
++
++}
+diff --git a/src/lights.h b/src/lights.h
+index 53d8093..1435ac5 100644
+--- a/src/lights.h
++++ b/src/lights.h
+@@ -35,13 +35,13 @@ protected:
+ public:
+ 	Light() { color = Color(1, 1, 1); power = 1; }
+ 	virtual ~Light() {}
+-	
++
+ 	ElementType getElementType() const { return ELEM_LIGHT; }
+-	
++
+ 	Color getColor() const { return color * power; }
+ 
+ 	virtual int getNumSamples() = 0;
+-	
++
+ 	virtual void getNthSample(int sampleIdx, const Vector& shadePos,
+ 							  Vector& samplePos, Color& color) = 0;
+ 
+@@ -53,7 +53,7 @@ public:
+ 	 * @retval false, otherwise.
+ 	 */
+ 	virtual bool intersect(const Ray& ray, double& intersectionDist) = 0;
+-	
++
+ 	virtual float solidAngle(const Vector& x) = 0;
+ 
+ 	void fillProperties(ParsedBlock& pb)
+@@ -71,12 +71,9 @@ public:
+ 		Light::fillProperties(pb);
+ 		pb.getVectorProp("pos", &pos);
+ 	}
+-	
+-	int getNumSamples()
+-	{
+-		return 1;
+-	}
+-	
++
++	int getNumSamples(){ return 1; }
++
+ 	void getNthSample(int sampleIdx, const Vector& shadePos,
+ 							  Vector& samplePos, Color& color)
+ 	{
+@@ -84,11 +81,11 @@ public:
+ 		samplePos = pos;
+ 	}
+ 
+-	bool intersect(const Ray& ray, double& intersectionDist)
+-	{
+-		return false; // you cannot intersect a point light.
+-	}
+-	
++	bool intersect(const Ray& ray, double& intersectionDist){
++	    // you cannot intersect a point light.
++	    return false;
++    }
++
+ 	float solidAngle(const Vector& x)
+ 	{
+ 		return 0;
+@@ -109,14 +106,43 @@ public:
+ 		pb.getIntProp("ySubd", &ySubd, 1);
+ 		pb.getTransformProp(T);
+ 	}
+-	
++
+ 	int getNumSamples();
+-	
++
+ 	void getNthSample(int sampleIdx, const Vector& shadePos,
+ 							  Vector& samplePos, Color& color);
+ 	bool intersect(const Ray& ray, double& intersectionDist);
+ 	float solidAngle(const Vector& x);
+-	
++
++};
++
++class SpotLight : public Light{
++    Vector pos;
++    Vector dir;
++    Transform T;
++    double innerAngle;
++    double outerAngle;
++public:
++    int getNumSamples(){return 1;}
++    void fillProperties(ParsedBlock& pb){
++		Light::fillProperties(pb);
++        pb.getVectorProp("pos", &pos);
++        pb.getVectorProp("dir", &dir);
++        pb.getDoubleProp("innerAngle",&innerAngle);
++        pb.getDoubleProp("outerAngle", &outerAngle);
++    }
++    void getNthSample(int sampleIdx, const Vector& adePos,
++							  Vector& samplePos, Color& color);
++
++    bool intersect(const Ray& ray, double& intersectionDist)
++    {
++        //Similar to the PointLight you cannot intersect a SpotLight
++        //Because of it has zero surface area
++        return false;
++    }
++    float solidAngle(const Vector& x){ return 0; }
++    ~SpotLight(){};
++
+ };
+ 
+ #endif // __LIGHTS_H__
+diff --git a/src/main.cpp b/src/main.cpp
+index 824fda8..b42d457 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -27,7 +27,7 @@ Color raytrace(Ray ray)
+ 	for (auto& node: scene.nodes) {
+ 		IntersectionInfo info;
+ 		if (!node->intersect(ray, info)) continue;
+-		
++
+ 		if (info.distance < closestDist) {
+ 			closestDist = info.distance;
+ 			closestNode = node;
+@@ -65,13 +65,13 @@ bool visibilityCheck(const Vector& start, const Vector& end)
+ 	ray.start = start;
+ 	ray.dir = end - start;
+ 	ray.dir.normalize();
+-	
++
+ 	double targetDist = (end - start).length();
+-	
++
+ 	for (auto& node: scene.nodes) {
+ 		IntersectionInfo info;
+ 		if (!node->intersect(ray, info)) continue;
+-		
++
+ 		if (info.distance < targetDist) {
+ 			return false;
+ 		}
+@@ -88,14 +88,14 @@ void debugRayTrace(int x, int y)
+ 
+ Color raytraceSinglePixel(double x, double y)
+ {
+-	auto getRay = scene.camera->dof ? 
++	auto getRay = scene.camera->dof ?
+ 		[](double x, double y, int whichCamera) {
+ 			return scene.camera->getDOFRay(x, y, whichCamera);
+ 		} :
+ 		[](double x, double y, int whichCamera) {
+ 			return scene.camera->getScreenRay(x, y, whichCamera);
+ 		};
+-		
++
+ 	if (scene.camera->stereoSeparation > 0) {
+ 		Ray leftRay = getRay(x, y, CAMERA_LEFT);
+ 		Ray rightRay= getRay(x, y, CAMERA_RIGHT);
+@@ -104,9 +104,9 @@ Color raytraceSinglePixel(double x, double y)
+ 		if (scene.settings.saturation != 1) {
+ 			colorLeft.adjustSaturation(scene.settings.saturation);
+ 			colorRight.adjustSaturation(scene.settings.saturation);
+-		
++
+ 		}
+-		return  colorLeft * scene.camera->leftMask 
++		return  colorLeft * scene.camera->leftMask
+ 		      + colorRight* scene.camera->rightMask;
+ 	} else {
+ 		Ray ray = getRay(x, y, CAMERA_CENTRAL);
+@@ -156,7 +156,7 @@ void render()
+ {
+ 	scene.beginFrame();
+ 	vector<Rect> buckets = getBucketsList();
+-	
++
+ 	if (scene.settings.wantPrepass || scene.settings.gi) {
+ 		// We render the whole screen in three passes.
+ 		// 1) First pass - use very coarse resolution rendering, tracing a single ray for a 16x16 block:
+@@ -172,7 +172,7 @@ void render()
+ 			}
+ 		}
+ 	}
+-	
++
+ 	for (Rect& r: buckets) {
+ 		for (int y = r.y0; y < r.y1; y++)
+ 			for (int x = r.x0; x < r.x1; x++) {
+@@ -189,7 +189,7 @@ int renderSceneThread(void* /*unused*/)
+ 	return 0;
+ }
+ 
+-const char* DEFAULT_SCENE = "data/boxed.qdmg";
++const char* DEFAULT_SCENE = "data/spotlight.qdmg";
+ 
+ int main ( int argc, char** argv )
+ {
+@@ -200,19 +200,19 @@ int main ( int argc, char** argv )
+ 		printf("Could not parse the scene!\n");
+ 		return -1;
+ 	}
+-	
++
+ 	initGraphics(scene.settings.frameWidth, scene.settings.frameHeight);
+ 	setWindowCaption("Quad Damage: preparing...");
+-	
++
+ 	scene.beginRender();
+-	
++
+ 	setWindowCaption("Quad Damage: rendering...");
+ 	Uint32 startTicks = SDL_GetTicks();
+ 	renderScene_threaded();
+ 	Uint32 elapsedMs = SDL_GetTicks() - startTicks;
+ 	printf("Render took %.2fs\n", elapsedMs / 1000.0f);
+ 	setWindowCaption("Quad Damage: rendered in %.2fs\n", elapsedMs / 1000.0f);
+-	
++
+ 	displayVFB(vfb);
+ 	waitForUserExit();
+ 	closeGraphics();
+diff --git a/src/scene.cpp b/src/scene.cpp
+index 2ea887b..197bfd1 100644
+--- a/src/scene.cpp
++++ b/src/scene.cpp
+@@ -67,7 +67,7 @@ class ParsedBlockImpl: public ParsedBlock {
+ 		char propName[128];
+ 		char propValue[256];
+ 		bool recognized;
+-		
++
+ 		LineInfo() {}
+ 		LineInfo(int line, const char* name, const char* value): line(line)
+ 		{
+@@ -370,7 +370,7 @@ public:
+ 	Texture* findTextureByName(const char* name);
+ 	Geometry* findGeometryByName(const char* name);
+ 	Node* findNodeByName(const char* name);
+-	
++
+ 	bool parse(const char* filename, Scene* s);
+ };
+ 
+@@ -860,6 +860,7 @@ SceneElement* DefaultSceneParser::newSceneElement(const char* className)
+ 	if (!strcmp(className, "Const")) return new Const;
+ 	if (!strcmp(className, "PointLight")) return new PointLight;
+ 	if (!strcmp(className, "RectLight")) return new RectLight;
++    if (!strcmp(className, "SpotLight")) return new SpotLight;
+ 
+ 	return NULL;
+ }
+-- 
+2.6.3.windows.1
+

@@ -1,0 +1,191 @@
+From 88cd004b2e0cc73aee5090e65134cfc6ea232692 Mon Sep 17 00:00:00 2001
+From: Ivan Ivanov <Ivan Ivanov>
+Date: Mon, 8 Feb 2016 19:56:23 +0200
+Subject: [PATCH] Project Fog
+
+---
+ data/boxed.qdmg |  8 +++++--
+ src/main.cpp    | 65 ++++++++++++++++++++++++++++++++++++++++++++++++++-------
+ src/scene.cpp   | 13 +++++++++++-
+ src/scene.h     |  7 +++++++
+ 4 files changed, 82 insertions(+), 11 deletions(-)
+
+diff --git a/data/boxed.qdmg b/data/boxed.qdmg
+index fc97b9a..bc20255 100644
+--- a/data/boxed.qdmg
++++ b/data/boxed.qdmg
+@@ -1,9 +1,13 @@
+ GlobalSettings {
+-	frameWidth          1024
+-	frameHeight         768
++	frameWidth          640
++	frameHeight         480
+ 	ambientLight        (0.075, 0.075, 0.075)
+ 	maxTraceDepth 8
+ 	wantAA false
++	fog true
++	fogHalfDist 60
++	fogHalfDist2 6
++	fogEdge 9
+ }
+ 
+ Camera camera {
+diff --git a/src/main.cpp b/src/main.cpp
+index 1792139..d7bf032 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -45,11 +45,14 @@ Color raytrace(Ray ray)
+ 			hitLightColor = light->getColor();
+ 		}
+ 	}
+-	if (hitLight) return hitLightColor;
+-
++	if (hitLight){
++        return hitLightColor;
++	}
+ 	// check if we hit the sky:
+ 	if (closestNode == NULL) {
+-		if (scene.environment) return scene.environment->getEnvironment(ray.dir);
++		if (scene.environment) return scene.environment->getEnvironment(ray.dir)
++            //*((scene.settings.fog) ? scene.settings.fogColor : Color(1,1,1))
++            ;
+ 		else return Color(0, 0, 0);
+ 	} else {
+ 		if ((ray.flags & RF_DEBUG) && ray.depth == 0)
+@@ -57,7 +60,53 @@ Color raytrace(Ray ray)
+ 		closestInfo.rayDir = ray.dir;
+ 		if (closestNode->bump)
+ 			closestNode->bump->modifyNormal(closestInfo);
+-		return closestNode->shader->shade(ray, closestInfo);
++
++        Color res = closestNode->shader->shade(ray, closestInfo);
++
++    if(scene.settings.fog){
++        double attenuation=1;
++        closestDist += 1e-6;
++        //upper
++        if(ray.start.y >= scene.settings.fogEdge && closestInfo.ip.y >= scene.settings.fogEdge){
++            attenuation = closestDist / scene.settings.fogHalfDist;
++            attenuation = std::pow(0.5,attenuation);
++        }
++        //lower
++        else  if((ray.start.y < scene.settings.fogEdge && closestInfo.ip.y < scene.settings.fogEdge)){
++            attenuation = closestDist / scene.settings.fogHalfDist2;
++            attenuation = std::pow(0.5,attenuation);
++        }
++        //both
++        else{
++            Plane p;
++            p.y = scene.settings.fogEdge;
++            IntersectionInfo inf;
++            p.intersect(ray, inf);
++
++            double attenuation1 = 0,attenuation2 = 0;
++            if(ray.start.y > scene.settings.fogEdge){
++                attenuation1 = inf.distance / scene.settings.fogHalfDist;
++                attenuation2 = (closestDist - inf.distance) / scene.settings.fogHalfDist2;
++
++            }else{
++                attenuation1 = inf.distance / scene.settings.fogHalfDist2;
++                attenuation2 = (closestDist - inf.distance) / scene.settings.fogHalfDist;
++            }
++
++            attenuation1 = std::pow(0.5, attenuation1);
++            attenuation2 = std::pow(0.5, attenuation2);
++
++            attenuation = attenuation1 * attenuation2;
++
++        };
++
++        if(attenuation > 1) attenuation = 1;
++        if(attenuation < 0) attenuation = 0;
++        res *= attenuation;
++        res += (1-attenuation)*scene.settings.fogColor;
++    }
++
++    return res;
+ 	}
+ }
+ 
+@@ -119,8 +168,8 @@ Color pathtrace(Ray ray, const Color& pathMultiplier, Random& rnd)
+     float rouletteMultiplier = 1.0f;
+     if(scene.settings.roulette){
+         double chance = rnd.randdouble();
+-        if(chance < pathMultiplier.intensity()){
+-            rouletteMultiplier = 1/pathMultiplier.intensity();
++        if( chance < pathMultiplier.intensity()){
++          //  rouletteMultiplier = 1/pathMultiplier.intensity();
+         }else{
+             return Color(0,0,0);
+         }
+@@ -285,7 +334,7 @@ Color renderGIPixel(int x, int y)
+ 	int N = scene.settings.numPaths;
+ 
+ 	Random rnd = getRandomGen();
+-	#pragma omp dy
++
+ 	for (int i = 0; i < N; i++) {
+ 		Ray ray = scene.camera->getScreenRay(
+ 			x + rnd.randdouble(), y + rnd.randdouble()
+@@ -348,7 +397,7 @@ int renderSceneThread(void* /*unused*/)
+ 	return 0;
+ }
+ 
+-const char* DEFAULT_SCENE = "data/smallpt.qdmg";
++const char* DEFAULT_SCENE = "data/boxed.qdmg";
+ 
+ int main ( int argc, char** argv )
+ {
+diff --git a/src/scene.cpp b/src/scene.cpp
+index 0d02641..51f8839 100644
+--- a/src/scene.cpp
++++ b/src/scene.cpp
+@@ -819,8 +819,14 @@ GlobalSettings::GlobalSettings()
+ 	saturation = 1;
+ 	wantPrepass = true;
+ 	gi = false;
+-	roulette = false;
++	roulette = true;
+ 	numPaths = 10;
++	fog = true;
++	fogColor = Color(0.57,0.57,0.57);
++	fogHalfDist = 300;
++	fogHalfDist2 = 100;
++	fogEdge = RESY/2;
++
+ }
+ 
+ void GlobalSettings::fillProperties(ParsedBlock& pb)
+@@ -835,6 +841,11 @@ void GlobalSettings::fillProperties(ParsedBlock& pb)
+ 	pb.getBoolProp("wantPrepass", &wantPrepass);
+ 	pb.getBoolProp("gi", &gi);
+ 	pb.getIntProp("numPaths", &numPaths, 1);
++	pb.getBoolProp("fog", &fog);
++	pb.getColorProp("fogColor", &fogColor);
++	pb.getDoubleProp("fogEdge", &fogEdge,0);
++	pb.getDoubleProp("fogHalfDist", &fogHalfDist);
++	pb.getDoubleProp("fogHalfDist2", &fogHalfDist2);
+ }
+ 
+ SceneElement* DefaultSceneParser::newSceneElement(const char* className)
+diff --git a/src/scene.h b/src/scene.h
+index 05aa218..bdfe20f 100644
+--- a/src/scene.h
++++ b/src/scene.h
+@@ -259,6 +259,13 @@ struct GlobalSettings: public SceneElement {
+ 	bool wantPrepass;            //!< Coarse resolution pre-pass required (defaults to true)
+ 	int numPaths;                //!< paths per pixel in path tracing
+ 
++	bool fog;                    //!< Is fog on?
++	Color fogColor;              //!< The color of the fog
++	double fogHalfDist;          //!< The distance at which the visibility drops by half in the upper part
++	double fogHalfDist2;         //!< The distance at which the visibility drops by half in the lower part
++	double fogEdge;              //!< y coordinate of the fog edge
++
++
+ 	GlobalSettings();
+ 	void fillProperties(ParsedBlock& pb);
+ 	ElementType getElementType() const { return ELEM_SETTINGS; }
+-- 
+2.6.3.windows.1
+

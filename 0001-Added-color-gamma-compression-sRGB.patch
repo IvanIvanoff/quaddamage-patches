@@ -1,0 +1,82 @@
+From e686d3bd0e51cfe68b5ac7c2681d41cf2d93e27b Mon Sep 17 00:00:00 2001
+From: Ivan Ivanov <Ivan Ivanov>
+Date: Fri, 11 Dec 2015 17:59:35 +0200
+Subject: [PATCH] Added color gamma-compression / sRGB
+
+---
+ src/color.h     | 26 +++++++++++++++++++++-----
+ src/constants.h |  4 ++++
+ 2 files changed, 25 insertions(+), 5 deletions(-)
+
+diff --git a/src/color.h b/src/color.h
+index 7eaabf2..175efb0 100644
+--- a/src/color.h
++++ b/src/color.h
+@@ -25,6 +25,22 @@
+ #define __COLOR_H__
+ 
+ #include "util.h"
++#include "constants.h"
++
++#define ADD_ONE(x) 1 + x
++
++inline unsigned convertTo8bit_sRGB(float x)
++{
++    if (x < 0) x = 0;
++    if (x > 1) x = 1;
++
++    if(x < SRGB_DELIMITER)
++        x *= SRGB_LOWER_MULTIPLYER;
++    else
++        x = (ADD_ONE(SRGB_ALPHA)) * pow(x, SRGB_POWER) - SRGB_ALPHA;
++
++    return nearestInt(x * 255.0f);
++}
+ 
+ inline unsigned convertTo8bit(float x)
+ {
+@@ -57,9 +73,9 @@ struct Color {
+ 	/// the blue channel occupying the least-significant byte
+ 	unsigned toRGB32(int redShift = 16, int greenShift = 8, int blueShift = 0)
+ 	{
+-		unsigned ir = convertTo8bit(r);
+-		unsigned ig = convertTo8bit(g);
+-		unsigned ib = convertTo8bit(b);
++		unsigned ir = convertTo8bit_sRGB(r);
++		unsigned ig = convertTo8bit_sRGB(g);
++		unsigned ib = convertTo8bit_sRGB(b);
+ 		return (ib << blueShift) | (ig << greenShift) | (ir << redShift);
+ 	}
+ 	/// make black
+@@ -105,12 +121,12 @@ struct Color {
+ 		g /= divider;
+ 		b /= divider;
+ 	}
+-	
++
+ 	inline const float& operator[] (int index) const
+ 	{
+ 		return components[index];
+ 	}
+-	
++
+ 	inline float& operator[] (int index)
+ 	{
+ 		return components[index];
+diff --git a/src/constants.h b/src/constants.h
+index a55aaa5..8cdd356 100644
+--- a/src/constants.h
++++ b/src/constants.h
+@@ -30,5 +30,9 @@
+ #define RESY 480
+ #define PI 3.141592653589793238
+ #define INF 1e99
++#define SRGB_DELIMITER 0.0031308
++#define SRGB_LOWER_MULTIPLYER 12.92
++#define SRGB_POWER 0.41667 // equals 1/2.4
++#define SRGB_ALPHA 0.055
+ 
+ #endif // __CONSTANTS_H__
+-- 
+2.6.3.windows.1
+
